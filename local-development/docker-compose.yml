@@ -1,0 +1,117 @@
+version: '3.8'
+
+services:
+  # LocalStack - AWS環境をローカルでエミュレート
+  localstack:
+    container_name: aws-localstack
+    image: localstack/localstack:latest
+    ports:
+      - "4566:4566"            # LocalStack Gateway
+      - "4510-4559:4510-4559"  # 外部サービス用ポート範囲
+    environment:
+      - SERVICES=s3,lambda,dynamodb,apigateway,cloudfront,sqs,sns,iam,cloudwatch,logs,events,sts,secretsmanager,ec2,elbv2
+      - DEBUG=1
+      - DATA_DIR=/tmp/localstack/data
+      - LAMBDA_EXECUTOR=docker
+      - DOCKER_HOST=unix:///var/run/docker.sock
+      - LOCALSTACK_HOST=localstack
+      - EDGE_PORT=4566
+      - PERSISTENCE=1
+    volumes:
+      - "${TMPDIR:-/tmp}/localstack:/tmp/localstack"
+      - "/var/run/docker.sock:/var/run/docker.sock"
+      - "./init-scripts:/etc/localstack/init/ready.d"
+    networks:
+      - aws-local
+
+  # Nginx - ローカルWebサーバー（オンプレミス環境の代替）
+  nginx:
+    container_name: aws-nginx
+    image: nginx:alpine
+    ports:
+      - "8080:80"
+      - "8443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/html:/usr/share/nginx/html:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+    networks:
+      - aws-local
+    depends_on:
+      - localstack
+
+  # PostgreSQL - RDS代替
+  postgres:
+    container_name: aws-postgres
+    image: postgres:15-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: appdb
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: password
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - aws-local
+
+  # Redis - ElastiCache代替
+  redis:
+    container_name: aws-redis
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    networks:
+      - aws-local
+
+  # Terraform実行用コンテナ
+  terraform:
+    container_name: aws-terraform
+    image: hashicorp/terraform:latest
+    working_dir: /workspace
+    volumes:
+      - ./terraform:/workspace
+      - ~/.aws:/root/.aws:ro
+    environment:
+      - AWS_ENDPOINT_URL=http://localstack:4566
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - AWS_DEFAULT_REGION=ap-northeast-1
+    networks:
+      - aws-local
+    depends_on:
+      - localstack
+    entrypoint: /bin/sh
+    stdin_open: true
+    tty: true
+
+  # AWS CLI実行用コンテナ
+  awscli:
+    container_name: aws-cli
+    image: amazon/aws-cli:latest
+    environment:
+      - AWS_ENDPOINT_URL=http://localstack:4566
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - AWS_DEFAULT_REGION=ap-northeast-1
+    volumes:
+      - ./scripts:/scripts
+    networks:
+      - aws-local
+    depends_on:
+      - localstack
+    entrypoint: /bin/sh
+    stdin_open: true
+    tty: true
+
+networks:
+  aws-local:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  redis-data:
